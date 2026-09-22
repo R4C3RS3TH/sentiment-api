@@ -19,7 +19,7 @@ Proyecto desarrollado para el curso de **DevOps** — Informe Parcial 1
 - [Script de automatización](#script-de-automatización)
 - [Endpoints de la API](#endpoints-de-la-api)
 - [Estructura del proyecto](#estructura-del-proyecto)
-- [Flujo de trabajo con Git (GitFlow + Conventional Commits)](#flujo-de-trabajo-con-git-gitflow--conventional-commits)
+
 
 ## Descripción del proyecto
 
@@ -54,7 +54,7 @@ Para correr el proyecto **con Docker** (recomendado):
 
 ```bash
 # 1. Clonar el repositorio
-git clone https://github.com/<tu-usuario>/sentiment-api.git
+git clone https://github.com/R4C3RS3TH/sentiment-api.git
 cd sentiment-api
 
 # 2. Crear entorno virtual e instalar dependencias
@@ -187,20 +187,3 @@ sentiment-api/
 └── README.md
 ```
 
-## Flujo de trabajo con Git (GitFlow + Conventional Commits)
-
-Este proyecto usa **GitFlow** como metodología de ramificación:
-
-- `main`: rama protegida, solo recibe merges vía Pull Request.
-- `develop`: rama de integración de nuevas funcionalidades.
-- `feature/*`: ramas de corta duración para cada funcionalidad, creadas
-  desde `develop`.
-
-Los mensajes de commit siguen el estándar **Conventional Commits**:
-
-```
-<tipo>[alcance opcional]: <descripción>
-```
-
-Tipos usados en este proyecto: `feat`, `fix`, `docs`, `test`, `chore`, `ci`,
-`refactor`.
