@@ -1,0 +1,39 @@
+services:
+  web:
+    build: .
+    container_name: sentiment_web
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sentiment_user}:${POSTGRES_PASSWORD:-sentiment_pass}@db:5432/${POSTGRES_DB:-sentiment_db}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - sentiment_network
+
+  db:
+    image: postgres:16-alpine
+    container_name: sentiment_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sentiment_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sentiment_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-sentiment_db}
+    volumes:
+      - sentiment_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sentiment_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sentiment_network
+
+networks:
+  sentiment_network:
+    driver: bridge
+
+volumes:
+  sentiment_db_data:
