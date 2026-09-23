@@ -24,6 +24,11 @@ COPY data/ ./data/
 # Entrena el modelo durante el build para que la imagen quede lista para servir
 RUN python train/train_model.py
 
+# Usuario sin privilegios para ejecutar la app
+RUN adduser --disabled-password --gecos '' appuser \
+    && chown -R appuser:appuser /app
+USER appuser
+
 EXPOSE 5000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
