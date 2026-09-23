@@ -30,6 +30,35 @@ success() { echo -e "\033[1;32m[OK]\033[0m $1"; }
 error()   { echo -e "\033[1;31m[ERROR]\033[0m $1" >&2; }
 
 # ---------------------------------------------------------------------------
+# Utilidades de entorno virtual (compatible Linux/macOS y Windows/Git Bash)
+# ---------------------------------------------------------------------------
+detectar_python() {
+    if command -v python3 >/dev/null 2>&1 && python3 -c "" >/dev/null 2>&1; then
+        echo "python3"
+    elif command -v python >/dev/null 2>&1; then
+        echo "python"
+    else
+        error "No se encontró Python en el PATH."
+        exit 1
+    fi
+}
+
+# En Windows el venv usa Scripts/activate; en Linux/macOS usa bin/activate.
+activar_venv() {
+    if [ -f "$VENV_DIR/bin/activate" ]; then
+        # shellcheck disable=SC1091
+        source "$VENV_DIR/bin/activate"
+    elif [ -f "$VENV_DIR/Scripts/activate" ]; then
+        # shellcheck disable=SC1091
+        source "$VENV_DIR/Scripts/activate"
+    else
+        error "No se encontró el script de activación en '$VENV_DIR'."
+        error "Elimina el directorio y vuelve a ejecutar: rm -rf $VENV_DIR && ./run.sh setup"
+        exit 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # 1. Clonar el repositorio
 # ---------------------------------------------------------------------------
 clonar_repositorio() {
@@ -55,15 +84,14 @@ clonar_repositorio() {
 configurar_entorno() {
     info "Creando entorno virtual en $VENV_DIR ..."
     if [ ! -d "$VENV_DIR" ]; then
-        python3 -m venv "$VENV_DIR"
+        "$(detectar_python)" -m venv "$VENV_DIR"
     fi
 
-    # shellcheck disable=SC1091
-    source "$VENV_DIR/bin/activate"
+    activar_venv
 
     info "Instalando dependencias (requirements-dev.txt) ..."
-    pip install --quiet --upgrade pip
-    pip install --quiet -r requirements-dev.txt
+    python -m pip install --quiet --upgrade pip
+    python -m pip install --quiet -r requirements-dev.txt
     success "Dependencias instaladas."
 
     if [ ! -f "models/sentiment_model.pkl" ]; then
@@ -79,8 +107,7 @@ configurar_entorno() {
 # 3. Ejecutar pruebas unitarias
 # ---------------------------------------------------------------------------
 ejecutar_tests() {
-    # shellcheck disable=SC1091
-    source "$VENV_DIR/bin/activate"
+    activar_venv
 
     info "Ejecutando pruebas unitarias con pytest ..."
     if python -m pytest -v; then
@@ -95,8 +122,7 @@ ejecutar_tests() {
 # 4. Ejecutar el proyecto en modo local
 # ---------------------------------------------------------------------------
 ejecutar_local() {
-    # shellcheck disable=SC1091
-    source "$VENV_DIR/bin/activate"
+    activar_venv
 
     if [ ! -f "models/sentiment_model.pkl" ]; then
         info "Modelo no encontrado, entrenando antes de iniciar ..."
