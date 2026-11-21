@@ -41,3 +41,9 @@ def test_classify_endpoint_rejects_non_json_body(client):
 def test_unknown_route_returns_404(client):
     response = client.get("/ruta-que-no-existe")
     assert response.status_code == 404
+
+
+def test_responses_are_not_cacheable(client):
+    response = client.get("/health")
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
