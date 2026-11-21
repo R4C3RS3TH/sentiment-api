@@ -7,10 +7,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Dependencias del sistema necesarias para psycopg2 y compilación de sklearn
+# Aplica los parches de seguridad de Debian publicados después de la imagen base
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc libpq-dev \
+    && apt-get upgrade -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
+
+# Actualiza pip/setuptools/wheel de la imagen base (versiones con CVEs conocidos)
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # Instala dependencias de Python primero para aprovechar la cache de Docker
 COPY requirements.txt .
