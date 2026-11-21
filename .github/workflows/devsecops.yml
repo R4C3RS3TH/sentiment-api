@@ -1,0 +1,301 @@
+# Pipeline DevSecOps - Sentiment API
+# Etapas: validate -> test -> build -> seguridad (SAST, secrets, SCA, contenedor, DAST)
+#         -> security-summary -> deploy-staging (+ monitoreo) -> deploy-production
+#
+# Los escaneos de seguridad NO bloquean el pipeline: generan reportes JSON/XML
+# que se suben como artifacts y luego se importan en DefectDojo.
+
+name: DevSecOps Pipeline
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.11"
+  IMAGE_NAME: sentiment-api
+  TRIVY_IMAGE: aquasec/trivy:0.58.1
+
+jobs:
+  validate:
+    name: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Lint (errores de sintaxis y nombres no definidos)
+        run: |
+          pip install flake8
+          flake8 app train tests --count --select=E9,F63,F7,F82 --show-source --statistics
+      - name: Validar docker-compose
+        run: docker compose config --quiet
+
+  test:
+    name: unit-tests
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Instalar dependencias
+        run: pip install -r requirements-dev.txt
+      - name: Entrenar modelo
+        run: python train/train_model.py
+      - name: Ejecutar pruebas unitarias
+        run: pytest --cov=app --cov-report=term --cov-report=xml --junitxml=pytest-report.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-reports
+          path: |
+            pytest-report.xml
+            coverage.xml
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Construir imagen Docker
+        run: docker build -t $IMAGE_NAME:${{ github.sha }} .
+      - name: Verificar que la imagen corre como usuario no-root
+        run: |
+          USER_IN_IMAGE=$(docker inspect --format '{{.Config.User}}' $IMAGE_NAME:${{ github.sha }})
+          echo "Usuario de la imagen: $USER_IN_IMAGE"
+          test "$USER_IN_IMAGE" = "appuser"
+
+  sast-bandit:
+    name: sast-bandit
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Ejecutar Bandit
+        run: |
+          pip install bandit
+          bandit -r app train -f json -o bandit-report.json || true
+          bandit -r app train -f screen || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report
+          path: bandit-report.json
+
+  sast-semgrep:
+    name: sast-semgrep
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Ejecutar Semgrep
+        run: |
+          pip install semgrep
+          semgrep scan --config p/python --config p/flask --config p/dockerfile \
+            --metrics=off --json --output semgrep-report.json || true
+          semgrep scan --config p/python --config p/flask --config p/dockerfile \
+            --metrics=off || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-report
+          path: semgrep-report.json
+
+  secret-scan:
+    name: secret-scan
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Instalar Gitleaks
+        run: |
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz \
+            | tar -xz gitleaks
+          sudo mv gitleaks /usr/local/bin/
+      - name: Ejecutar Gitleaks
+        run: |
+          gitleaks detect --source . --report-format json \
+            --report-path gitleaks-report.json --exit-code 0 --verbose
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: gitleaks-report.json
+
+  dependency-scan:
+    name: dependency-scan
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy SCA (requirements.txt)
+        run: |
+          docker run --rm -v "$PWD:/src" $TRIVY_IMAGE fs /src \
+            --scanners vuln --format json --output /src/trivy-fs-report.json --exit-code 0
+          docker run --rm -v "$PWD:/src" $TRIVY_IMAGE fs /src \
+            --scanners vuln --format table --exit-code 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trivy-fs-report
+          path: trivy-fs-report.json
+
+  container-scan:
+    name: container-scan
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - name: Construir imagen
+        run: docker build -t $IMAGE_NAME:${{ github.sha }} .
+      - name: Trivy image scan
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/src" \
+            $TRIVY_IMAGE image $IMAGE_NAME:${{ github.sha }} \
+            --format json --output /src/trivy-image-report.json --exit-code 0
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            $TRIVY_IMAGE image $IMAGE_NAME:${{ github.sha }} \
+            --severity HIGH,CRITICAL --format table --exit-code 0
+      - name: Trivy misconfig (Dockerfile y docker-compose)
+        run: |
+          docker run --rm -v "$PWD:/src" $TRIVY_IMAGE config /src \
+            --format json --output /src/trivy-config-report.json --exit-code 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trivy-image-report
+          path: |
+            trivy-image-report.json
+            trivy-config-report.json
+
+  dast-zap:
+    name: dast-zap
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - name: Levantar la API (web + db)
+        run: docker compose up -d --build
+      - name: Esperar a que la API responda
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:5000/health && exit 0
+            sleep 3
+          done
+          docker compose logs
+          exit 1
+      - name: OWASP ZAP baseline
+        run: |
+          docker run --rm --network host --user root -v "$PWD:/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
+            -t http://localhost:5000 -J zap-report.json -x zap-report.xml -r zap-report.html -I || true
+      - name: Apagar la API
+        if: always()
+        run: docker compose down -v
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zap-report
+          path: |
+            zap-report.json
+            zap-report.xml
+            zap-report.html
+
+  security-summary:
+    name: security-summary
+    runs-on: ubuntu-latest
+    needs: [sast-bandit, sast-semgrep, secret-scan, dependency-scan, container-scan, dast-zap]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: reports
+      - name: Resumen de hallazgos por herramienta
+        run: |
+          cd reports
+          echo "## Resumen de seguridad" >> $GITHUB_STEP_SUMMARY
+          echo "| Herramienta | Hallazgos |" >> $GITHUB_STEP_SUMMARY
+          echo "| --- | --- |" >> $GITHUB_STEP_SUMMARY
+          echo "| Bandit (SAST) | $(jq '.results | length' bandit-report/bandit-report.json) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Semgrep (SAST) | $(jq '.results | length' semgrep-report/semgrep-report.json) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Gitleaks (secrets) | $(jq 'length' gitleaks-report/gitleaks-report.json) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Trivy fs (SCA) | $(jq '[.Results[]?.Vulnerabilities[]?] | length' trivy-fs-report/trivy-fs-report.json) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Trivy image (contenedor) | $(jq '[.Results[]?.Vulnerabilities[]?] | length' trivy-image-report/trivy-image-report.json) |" >> $GITHUB_STEP_SUMMARY
+          echo "| ZAP (DAST) | $(jq '[.site[]?.alerts[]?] | length' zap-report/zap-report.json) |" >> $GITHUB_STEP_SUMMARY
+          cat $GITHUB_STEP_SUMMARY
+
+  deploy-staging:
+    name: deploy-staging
+    runs-on: ubuntu-latest
+    needs: security-summary
+    if: github.event_name != 'pull_request'
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - name: Desplegar en staging
+        run: docker compose -p sentiment-staging up -d --build
+      - name: Smoke test
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:5000/health && break
+            sleep 3
+          done
+          curl -sf http://localhost:5000/health
+          curl -sf -X POST http://localhost:5000/classify \
+            -H "Content-Type: application/json" -d '{"text":"excelente servicio, muy feliz"}'
+      - name: Monitoreo post-deploy (disponibilidad, latencia y predicciones)
+        run: |
+          OK=0; TOTAL=10
+          echo "intento,codigo,latencia_s" > monitoring-report.csv
+          for i in $(seq 1 $TOTAL); do
+            R=$(curl -s -o /dev/null -w "%{http_code},%{time_total}" http://localhost:5000/health)
+            echo "$i,$R" >> monitoring-report.csv
+            [ "${R%%,*}" = "200" ] && OK=$((OK+1))
+            sleep 1
+          done
+          PRED=$(docker exec sentiment_db psql -U sentiment_user -d sentiment_db -tAc "SELECT COUNT(*) FROM predictions;")
+          echo "## Monitoreo staging" >> $GITHUB_STEP_SUMMARY
+          echo "- Disponibilidad: $OK/$TOTAL health checks OK" >> $GITHUB_STEP_SUMMARY
+          echo "- Predicciones registradas en PostgreSQL: $PRED" >> $GITHUB_STEP_SUMMARY
+          cat monitoring-report.csv
+          test "$OK" -eq "$TOTAL"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: monitoring-staging
+          path: monitoring-report.csv
+      - name: Apagar staging
+        if: always()
+        run: docker compose -p sentiment-staging down -v
+
+  deploy-production:
+    name: deploy-production
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Desplegar en producción
+        run: docker compose -p sentiment-prod up -d --build
+      - name: Smoke test y monitoreo
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:5000/health && break
+            sleep 3
+          done
+          curl -sf http://localhost:5000/health
+          echo "## Producción" >> $GITHUB_STEP_SUMMARY
+          echo "- Versión desplegada: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Health check: OK" >> $GITHUB_STEP_SUMMARY
+      - name: Apagar producción (runner efímero)
+        if: always()
+        run: docker compose -p sentiment-prod down -v
