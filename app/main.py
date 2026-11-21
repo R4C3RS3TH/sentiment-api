@@ -1,4 +1,6 @@
 """API Flask para clasificación de sentimiento de texto en español."""
+import os
+
 from flask import Flask, jsonify, request
 
 from app.db import init_db, log_prediction
@@ -77,4 +79,10 @@ def create_app(classifier: SentimentClassifier = None) -> Flask:
 app = create_app()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    # Solo para desarrollo local: en contenedor la app la sirve Gunicorn.
+    # Por defecto escucha en localhost y sin debugger (activable con FLASK_DEBUG=1).
+    app.run(
+        host=os.environ.get("FLASK_RUN_HOST", "127.0.0.1"),
+        port=int(os.environ.get("FLASK_RUN_PORT", "5000")),
+        debug=os.environ.get("FLASK_DEBUG", "0") == "1",
+    )
