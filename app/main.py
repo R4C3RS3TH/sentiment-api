@@ -69,6 +69,15 @@ def create_app(classifier: SentimentClassifier = None) -> Flask:
             }
         ), 200
 
+    @app.after_request
+    def security_headers(response):
+        # Las respuestas incluyen el texto enviado por el usuario: no deben
+        # quedar en cachés intermedias ni del navegador.
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
     @app.errorhandler(404)
     def not_found(_error):
         return jsonify({"error": "Recurso no encontrado"}), 404
